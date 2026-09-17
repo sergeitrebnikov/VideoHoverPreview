@@ -1,0 +1,25 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Local / build junk
+@AutomationLog.txt
+runtime/a12-extract/
+runtime/msi-scan.txt
+runtime/ffmpeg/ffmpeg-master-latest-win64-gpl-shared/
+node-test.js
+debug_explorer.py
+*.zip
+.DS_Store
+Thumbs.db
+
+# User data (never commit)
+.video-hover-preview/
+clips/
+
+# IDE
+.vscode/
+.idea/
+*.suo
