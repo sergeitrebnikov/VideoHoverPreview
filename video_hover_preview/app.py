@@ -87,15 +87,37 @@ class HoverPreviewApp:
         self._refresh_icon()
 
     def _shutdown(self) -> None:
+        from .native_player import force_stop_all_players
+
         self._stop.set()
-        stop_preview(force=True)
-        hide_preview()
-        destroy_preview()
+        try:
+            stop_preview(force=True)
+        except Exception as exc:
+            _log(f"shutdown stop_preview: {exc}")
+        try:
+            hide_preview()
+            destroy_preview()
+        except Exception as exc:
+            _log(f"shutdown destroy: {exc}")
+        try:
+            force_stop_all_players()
+        except Exception as exc:
+            _log(f"shutdown kill players: {exc}")
 
     def _quit(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
         self._shutdown()
-        icon.visible = False
-        icon.stop()
+        # Если pystray/COM зависнут на выходе — всё равно гасим процесс.
+        def _force_exit() -> None:
+            time.sleep(0.6)
+            os._exit(0)
+
+        threading.Thread(target=_force_exit, name="force-exit", daemon=True).start()
+        try:
+            icon.visible = False
+            icon.stop()
+        except Exception as exc:
+            _log(f"quit icon.stop: {exc}")
+            os._exit(0)
 
     def _open_settings(self, icon: pystray.Icon, item: pystray.MenuItem) -> None:
         self._want_settings = True

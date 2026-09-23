@@ -302,20 +302,41 @@ def _kill_pid(pid: int) -> None:
             win32api.CloseHandle(handle)
     except Exception:
         pass
+    # Дерево процессов (ffplay/ffmpeg иногда не умирают от одного TerminateProcess)
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(int(pid))],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+            timeout=2,
+        )
+    except Exception:
+        pass
+
+
+def _install_root() -> Path:
+    return Path(__file__).resolve().parents[1]
 
 
 def kill_runtime_players() -> None:
-    """Сразу гасит окно превью и все ffmpeg/ffplay из runtime (без WMI)."""
+    """Гасит окно превью и все ffmpeg/ffplay нашего runtime (и зависшие с loop)."""
     _hide_all_preview_windows()
-    bin_dir = str((Path(__file__).resolve().parents[1] / "runtime" / "ffmpeg" / "bin")).lower().replace("/", "\\")
+    root = _install_root()
+    bin_dir = str((root / "runtime" / "ffmpeg" / "bin").resolve()).lower().replace("/", "\\")
+    root_s = str(root.resolve()).lower().replace("/", "\\")
+    clip_marker = "video-hover-preview"
+    killed: set[int] = set()
+
     try:
         import win32process
 
         pids = win32process.EnumProcesses()
     except Exception:
-        return
+        pids = []
+
     for pid in pids:
-        if not pid:
+        if not pid or pid in killed:
             continue
         path = _exe_path(pid).lower().replace("/", "\\")
         if not path:
@@ -323,8 +344,51 @@ def kill_runtime_players() -> None:
         name = Path(path).name
         if name not in {"ffmpeg.exe", "ffplay.exe"}:
             continue
-        if bin_dir in path:
+        if bin_dir in path or root_s in path:
             _kill_pid(pid)
+            killed.add(pid)
+
+    # Запасной путь: по командной строке (если путь exe недоступен)
+    try:
+        import pythoncom
+        import win32com.client
+
+        pythoncom.CoInitialize()
+        try:
+            wmi = win32com.client.GetObject("winmgmts:")
+            for proc in wmi.ExecQuery("SELECT ProcessId, Name, CommandLine FROM Win32_Process"):
+                name = (proc.Name or "").lower()
+                if name not in {"ffmpeg.exe", "ffplay.exe"}:
+                    continue
+                pid = int(proc.ProcessId)
+                if pid in killed:
+                    continue
+                cmd = (proc.CommandLine or "").lower().replace("/", "\\")
+                if bin_dir in cmd or root_s in cmd or clip_marker in cmd:
+                    _kill_pid(pid)
+                    killed.add(pid)
+        finally:
+            pythoncom.CoUninitialize()
+    except Exception:
+        pass
+
+
+def force_stop_all_players() -> None:
+    """Жёсткая остановка превью: процессы + известные Popen."""
+    global _clip_proc, _audio_proc
+    for proc in (_clip_proc, _audio_proc):
+        if proc is not None and proc.poll() is None:
+            try:
+                _kill_pid(int(proc.pid))
+            except Exception:
+                pass
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    _clip_proc = None
+    _audio_proc = None
+    kill_runtime_players()
 
 
 def _stop_audio() -> None:
@@ -347,12 +411,14 @@ def _start_audio(ffplay: Path, clip: Path, volume: int) -> None:
     _stop_audio()
     vol = max(0, min(100, int(volume)))
     try:
+        # Без бесконечного -loop 0: при сбое stop не оставляем вечный ffplay.
+        # Цикл кадров и так перезапускает звук при необходимости.
         _audio_proc = subprocess.Popen(
             [
                 str(ffplay),
                 "-nodisp",
                 "-vn",
-                "-loop", "0",
+                "-autoexit",
                 "-volume", str(vol),
                 "-loglevel", "quiet",
                 str(clip),
@@ -530,16 +596,7 @@ def stop_clip_playback() -> None:
         stop_event.set()
     _session_stop = None
 
-    kill_runtime_players()
-
-    proc = _clip_proc
-    _clip_proc = None
-    if proc is not None and proc.poll() is None:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    _stop_audio()
+    force_stop_all_players()
 
     hwnd = _hwnd
     with _lock:
@@ -552,12 +609,13 @@ def stop_clip_playback() -> None:
     thread = _clip_thread
     _clip_thread = None
     if thread and thread.is_alive() and thread is not threading.current_thread():
-        thread.join(timeout=0.2)
-    kill_runtime_players()
+        thread.join(timeout=0.15)
+    force_stop_all_players()
 
 
 def destroy_native() -> None:
     stop_clip_playback()
+    force_stop_all_players()
 
 
 def is_clip_playing() -> bool:

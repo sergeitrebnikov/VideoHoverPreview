@@ -572,7 +572,10 @@ def _run_seamless(
 def stop_preview(*, force: bool = False) -> None:
     global _current_video, _segment_thread, _ffmpeg_proc
 
+    from .native_player import force_stop_all_players
+
     _segment_stop.set()
+    _prefetch_stop.set()
     stop_clip_playback()
 
     ffmpeg_proc = _ffmpeg_proc
@@ -585,7 +588,10 @@ def stop_preview(*, force: bool = False) -> None:
     thread = _segment_thread
     _segment_thread = None
     if thread and thread.is_alive() and thread is not threading.current_thread():
-        thread.join(timeout=0.3)
+        thread.join(timeout=0.25)
+
+    # На случай гонки: поток клипа успел поднять новый ffmpeg/ffplay
+    force_stop_all_players()
 
 
 def play_video_preview(video: Path, settings: Settings, ffplay: Path) -> bool:
