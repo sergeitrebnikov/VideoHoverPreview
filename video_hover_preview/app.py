@@ -100,7 +100,7 @@ class HoverPreviewApp:
         except Exception as exc:
             _log(f"shutdown destroy: {exc}")
         try:
-            force_stop_all_players()
+            force_stop_all_players(deep=True)
         except Exception as exc:
             _log(f"shutdown kill players: {exc}")
 
@@ -295,7 +295,7 @@ class HoverPreviewApp:
             _log("старт: ffmpeg не найден (runtime\\ffmpeg\\bin)")
         else:
             _log(f"старт: ffmpeg={self._ffplay}")
-            kill_runtime_players()
+            kill_runtime_players(deep=True)
             warm_ffplay(self._ffplay)
 
         self._worker = threading.Thread(target=self._loop, name="hover-worker", daemon=True)

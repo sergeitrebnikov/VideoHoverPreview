@@ -38,6 +38,7 @@ def show_settings_dialog(
 
     continuous = tk.BooleanVar(value=settings.continuous_mode)
     sound_on = tk.BooleanVar(value=settings.sound_enabled)
+    hover_ms = tk.IntVar(value=max(0, min(2000, int(settings.hover_delay_ms or 40))))
     seg_dur = tk.DoubleVar(value=settings.segment_duration_sec)
     seg_count = tk.IntVar(value=settings.segment_count)
     first_pct = tk.DoubleVar(value=settings.first_percent)
@@ -56,6 +57,14 @@ def show_settings_dialog(
 
     row = 0
     ttk.Label(frm, text="Общее", font=("", 10, "bold")).grid(row=row, column=0, columnspan=2, sticky="w")
+    row += 1
+
+    ttk.Label(frm, text="Задержка наведения, мс").grid(
+        row=row, column=0, sticky="w", pady=3
+    )
+    ttk.Spinbox(frm, textvariable=hover_ms, from_=0, to=2000, increment=10, width=10).grid(
+        row=row, column=1, sticky="e", pady=3, padx=(12, 0)
+    )
     row += 1
 
     ttk.Label(frm, text="Старт воспроизведения, % от длины файла").grid(
@@ -142,6 +151,7 @@ def show_settings_dialog(
         try:
             settings.continuous_mode = bool(continuous.get())
             settings.sound_enabled = bool(sound_on.get())
+            settings.hover_delay_ms = int(float(hover_ms.get()))
             settings.segment_duration_sec = float(seg_dur.get())
             settings.segment_count = int(float(seg_count.get()))
             settings.first_percent = float(first_pct.get())
@@ -149,6 +159,7 @@ def show_settings_dialog(
             settings.volume = int(float(volume.get()))
         except (tk.TclError, ValueError, TypeError):
             return
+        settings.hover_delay_ms = max(0, min(2000, settings.hover_delay_ms))
         settings.segment_count = max(1, min(12, settings.segment_count))
         settings.segment_duration_sec = max(0.5, min(60.0, settings.segment_duration_sec))
         settings.first_percent = max(0.0, min(90.0, settings.first_percent))

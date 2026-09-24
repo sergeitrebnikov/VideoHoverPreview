@@ -293,7 +293,8 @@ def _exe_path(pid: int) -> str:
         _kernel32.CloseHandle(handle)
 
 
-def _kill_pid(pid: int) -> None:
+def _kill_pid(pid: int, *, use_taskkill: bool = False) -> None:
+    alive = False
     try:
         handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, int(pid))
         try:
@@ -301,15 +302,28 @@ def _kill_pid(pid: int) -> None:
         finally:
             win32api.CloseHandle(handle)
     except Exception:
-        pass
-    # Дерево процессов (ffplay/ffmpeg иногда не умирают от одного TerminateProcess)
+        alive = True
+    if not use_taskkill:
+        return
+    # taskkill только если процесс ещё жив (дорого запускать каждый раз)
+    try:
+        handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if handle:
+            _kernel32.CloseHandle(handle)
+            alive = True
+        else:
+            alive = False
+    except Exception:
+        alive = True
+    if not alive:
+        return
     try:
         subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(int(pid))],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=CREATE_NO_WINDOW,
-            timeout=2,
+            timeout=1.5,
         )
     except Exception:
         pass
@@ -319,23 +333,78 @@ def _install_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def kill_runtime_players() -> None:
-    """Гасит окно превью и все ffmpeg/ffplay нашего runtime (и зависшие с loop)."""
-    _hide_all_preview_windows()
+def _candidate_player_pids() -> list[int]:
+    """PID ffmpeg/ffplay по имени через Toolhelp (без OpenProcess на каждый процесс)."""
+    names = {"ffmpeg.exe", "ffplay.exe"}
+    found: list[int] = []
+    try:
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        TH32CS_SNAPPROCESS = 0x00000002
+        CreateToolhelp32Snapshot = _kernel32.CreateToolhelp32Snapshot
+        CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        Process32FirstW = _kernel32.Process32FirstW
+        Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        Process32FirstW.restype = wintypes.BOOL
+        Process32NextW = _kernel32.Process32NextW
+        Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        Process32NextW.restype = wintypes.BOOL
+
+        snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not snap or snap == wintypes.HANDLE(-1).value:
+            raise OSError("snapshot failed")
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            ok = Process32FirstW(snap, ctypes.byref(entry))
+            while ok:
+                exe = (entry.szExeFile or "").lower()
+                if exe in names:
+                    pid = int(entry.th32ProcessID)
+                    if pid:
+                        found.append(pid)
+                ok = Process32NextW(snap, ctypes.byref(entry))
+        finally:
+            _kernel32.CloseHandle(snap)
+    except Exception:
+        try:
+            import win32process
+
+            for pid in win32process.EnumProcesses() or []:
+                if pid:
+                    found.append(int(pid))
+        except Exception:
+            pass
+    return found
+
+
+def kill_runtime_players(*, deep: bool = False, scan: bool = True) -> None:
+    """Гасит ffmpeg/ffplay нашего runtime.
+    hot-path: scan=False — no-op (PID уже убиты).
+    deep=True — taskkill /T (старт/выход), без медленного WMI.
+    """
+    if not scan and not deep:
+        return
+
     root = _install_root()
     bin_dir = str((root / "runtime" / "ffmpeg" / "bin").resolve()).lower().replace("/", "\\")
     root_s = str(root.resolve()).lower().replace("/", "\\")
-    clip_marker = "video-hover-preview"
     killed: set[int] = set()
 
-    try:
-        import win32process
-
-        pids = win32process.EnumProcesses()
-    except Exception:
-        pids = []
-
-    for pid in pids:
+    for pid in _candidate_player_pids():
         if not pid or pid in killed:
             continue
         path = _exe_path(pid).lower().replace("/", "\\")
@@ -345,41 +414,17 @@ def kill_runtime_players() -> None:
         if name not in {"ffmpeg.exe", "ffplay.exe"}:
             continue
         if bin_dir in path or root_s in path:
-            _kill_pid(pid)
+            _kill_pid(pid, use_taskkill=deep)
             killed.add(pid)
 
-    # Запасной путь: по командной строке (если путь exe недоступен)
-    try:
-        import pythoncom
-        import win32com.client
 
-        pythoncom.CoInitialize()
-        try:
-            wmi = win32com.client.GetObject("winmgmts:")
-            for proc in wmi.ExecQuery("SELECT ProcessId, Name, CommandLine FROM Win32_Process"):
-                name = (proc.Name or "").lower()
-                if name not in {"ffmpeg.exe", "ffplay.exe"}:
-                    continue
-                pid = int(proc.ProcessId)
-                if pid in killed:
-                    continue
-                cmd = (proc.CommandLine or "").lower().replace("/", "\\")
-                if bin_dir in cmd or root_s in cmd or clip_marker in cmd:
-                    _kill_pid(pid)
-                    killed.add(pid)
-        finally:
-            pythoncom.CoUninitialize()
-    except Exception:
-        pass
-
-
-def force_stop_all_players() -> None:
-    """Жёсткая остановка превью: процессы + известные Popen."""
+def force_stop_all_players(*, deep: bool = False, scan: bool = True) -> None:
+    """Остановка превью. Обычный стоп — быстрый; deep — при выходе из приложения."""
     global _clip_proc, _audio_proc
     for proc in (_clip_proc, _audio_proc):
         if proc is not None and proc.poll() is None:
             try:
-                _kill_pid(int(proc.pid))
+                _kill_pid(int(proc.pid), use_taskkill=deep)
             except Exception:
                 pass
             try:
@@ -388,8 +433,7 @@ def force_stop_all_players() -> None:
                 pass
     _clip_proc = None
     _audio_proc = None
-    kill_runtime_players()
-
+    kill_runtime_players(deep=deep, scan=scan or deep)
 
 def _stop_audio() -> None:
     global _audio_proc
@@ -596,7 +640,8 @@ def stop_clip_playback() -> None:
         stop_event.set()
     _session_stop = None
 
-    force_stop_all_players()
+    # Сначала только известные PID — без скана процессов.
+    force_stop_all_players(deep=False, scan=False)
 
     hwnd = _hwnd
     with _lock:
@@ -604,19 +649,19 @@ def stop_clip_playback() -> None:
     _anchor = None
     _playing = False
     _hide_hwnd(hwnd)
-    _hide_all_preview_windows()
+    # Без EnumWindows на каждый стоп — может зависнуть на чужом HWND.
 
     thread = _clip_thread
     _clip_thread = None
     if thread and thread.is_alive() and thread is not threading.current_thread():
-        thread.join(timeout=0.15)
-    force_stop_all_players()
+        thread.join(timeout=0.08)
+    # Добить сирот по имени exe (без WMI/taskkill/EnumWindows).
+    force_stop_all_players(deep=False, scan=True)
 
 
 def destroy_native() -> None:
     stop_clip_playback()
-    force_stop_all_players()
-
+    force_stop_all_players(deep=True)
 
 def is_clip_playing() -> bool:
     thread = _clip_thread

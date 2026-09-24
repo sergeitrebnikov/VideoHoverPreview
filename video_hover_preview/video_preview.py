@@ -560,13 +560,13 @@ def _run_seamless(
     _log(f"playback start ok={started} audio={play_audio}")
 
     # Ждём, пока поток реально начнёт кадры (иначе while сразу выходит).
-    for _ in range(40):
+    for _ in range(20):
         if _segment_stop.is_set() or is_clip_playing():
             break
-        time.sleep(0.05)
+        time.sleep(0.02)
 
     while not _segment_stop.is_set() and is_clip_playing():
-        time.sleep(0.05)
+        time.sleep(0.04)
 
 
 def stop_preview(*, force: bool = False) -> None:
@@ -591,7 +591,7 @@ def stop_preview(*, force: bool = False) -> None:
         thread.join(timeout=0.25)
 
     # На случай гонки: поток клипа успел поднять новый ffmpeg/ffplay
-    force_stop_all_players()
+    force_stop_all_players(deep=False, scan=True)
 
 
 def play_video_preview(video: Path, settings: Settings, ffplay: Path) -> bool:
@@ -624,7 +624,7 @@ def play_video_preview(video: Path, settings: Settings, ffplay: Path) -> bool:
     )
     if not _clip_ready(clip):
         if _prefetch_video == video and _prefetch_thread and _prefetch_thread.is_alive():
-            _prefetch_thread.join(timeout=1.5)
+            _prefetch_thread.join(timeout=0.4)
 
     _log(f"play request name={video.name} duration={duration} starts={starts}")
 

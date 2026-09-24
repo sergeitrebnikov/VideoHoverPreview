@@ -19,7 +19,7 @@ IMAGE_EXTENSIONS = {
 @dataclass
 class Settings:
     enabled: bool = True
-    hover_delay_ms: int = 120
+    hover_delay_ms: int = 40
     preview_duration_sec: float = 12.0
     max_width: int = 528
     volume: int = 80
@@ -28,7 +28,7 @@ class Settings:
     # Длительность одного сегмента (кадра) в покадровом режиме.
     segment_duration_sec: float = 3.0
     # Сколько сегментов склеивать в превью.
-    segment_count: int = 4
+    segment_count: int = 3
     # Процент длительности файла, с которого начинается первый сегмент (0–90).
     first_percent: float = 20.0
     # Без склеек: играть подряд с first_percent, пока курсор на файле.
@@ -67,6 +67,7 @@ def load_settings() -> Settings:
         settings.segment_duration_sec = max(0.5, min(60.0, float(settings.segment_duration_sec)))
         settings.first_percent = max(0.0, min(90.0, float(settings.first_percent)))
         settings.preview_duration_sec = max(3.0, min(120.0, float(settings.preview_duration_sec)))
+        settings.hover_delay_ms = max(0, min(2000, int(settings.hover_delay_ms)))
         settings.volume = max(0, min(100, int(settings.volume)))
         settings.sound_enabled = bool(settings.sound_enabled)
         return settings
