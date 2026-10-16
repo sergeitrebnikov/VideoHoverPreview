@@ -40,11 +40,11 @@ VideoHoverPreview.exe
 VideoHoverPreview.exe   — лаунчер
 launch.py               — точка входа
 video_hover_preview/    — код
-runtime/ffmpeg/bin/     — ffmpeg / ffplay (в релизном zip)
-runtime/python/tools/   — портативный Python (в релизном zip)
+runtime/ffmpeg/bin/     — ffmpeg / ffplay
+runtime/python/tools/   — портативный Python
 ```
 
-В git обычно лежит исходный код; полный portable-zip — в Releases (runtime тяжёлый).
+Клон репозитория уже portable: `runtime/` и `VideoHoverPreview.exe` в git. Архив для раздачи — также в [Releases](../../releases).
 
 ## Лицензии сторонних компонентов
 

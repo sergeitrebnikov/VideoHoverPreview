@@ -36,21 +36,64 @@ def _explorer_hwnd_at_point(x: int, y: int) -> int | None:
     return None
 
 
-def _explorer_folder_for_hwnd(hwnd: int) -> Path | None:
+def _active_tab_name_from_title(title: str) -> str:
+    """Имя активной вкладки из заголовка окна Проводника.
+
+    Одна вкладка: «VideoHoverPreview — проводник».
+    Несколько: «Локальный диск (C:) и еще 1 вкладка — проводник».
+    У всех вкладок одного окна один HWND, Shell.Windows отдаёт их по порядку
+    открытия, поэтому первая папка — не обязательно та, что на экране.
+    """
+    text = (title or "").strip()
+    for suffix in (
+        " — проводник",
+        " - проводник",
+        " — File Explorer",
+        " - File Explorer",
+    ):
+        if text.lower().endswith(suffix.lower()):
+            text = text[: -len(suffix)].strip()
+            break
+    text = re.sub(r"\s+и ещ[её]\s+\d+\s+вкладк\w*$", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+and\s+\d+\s+more\s+tabs?$", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
+def _explorer_folders_for_hwnd(hwnd: int) -> list[Path]:
+    """Папки вкладок этого окна. Активная вкладка — первая."""
+    found: list[tuple[str, Path]] = []
     try:
         shell = win32com.client.Dispatch("Shell.Application")
         for window in shell.Windows():
             try:
                 if int(window.HWND) != hwnd:
                     continue
-                folder = window.Document.Folder.Self.Path
-                if folder:
-                    return Path(folder)
+                item = window.Document.Folder.Self
+                folder = item.Path
+                if not folder:
+                    continue
+                path = Path(folder)
+                if not path.is_dir():
+                    continue
+                name = str(getattr(item, "Name", "") or "")
+                if all(existing != path for _, existing in found):
+                    found.append((name, path))
             except Exception:
                 continue
     except Exception:
-        return None
-    return None
+        return []
+
+    if not found:
+        return []
+
+    try:
+        active_name = _active_tab_name_from_title(win32gui.GetWindowText(hwnd))
+    except Exception:
+        active_name = ""
+
+    if active_name:
+        found.sort(key=lambda pair: 0 if pair[0].casefold() == active_name.casefold() else 1)
+    return [path for _, path in found]
 
 
 def _rect_contains(rect, x: int, y: int) -> bool:
@@ -200,8 +243,8 @@ def get_hovered_explorer_file() -> HoveredItem | None:
     if not hwnd:
         return None
 
-    folder = _explorer_folder_for_hwnd(hwnd)
-    if not folder or not folder.is_dir():
+    folders = _explorer_folders_for_hwnd(hwnd)
+    if not folders:
         return None
 
     item_name = _item_name_at_point_strict(x, y)
@@ -216,10 +259,11 @@ def get_hovered_explorer_file() -> HoveredItem | None:
     if not item_name:
         return None
 
-    candidate = _resolve_file(folder, item_name)
-    if not candidate:
-        return None
-    return HoveredItem(path=candidate, name=candidate.name)
+    for folder in folders:
+        candidate = _resolve_file(folder, item_name)
+        if candidate:
+            return HoveredItem(path=candidate, name=candidate.name)
+    return None
 
 
 def media_extension(path: Path) -> str:
